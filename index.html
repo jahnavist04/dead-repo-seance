@@ -1,5 +1,5 @@
 <!doctype html>
-<html>
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -7,58 +7,83 @@
 <style>
   body{background:#0b0b12;color:#d9d4ff;font-family:Georgia,serif;max-width:720px;margin:0 auto;padding:24px}
   h1{text-align:center;text-shadow:0 0 18px #8a5cff}
+  .row{text-align:center;margin-top:12px}
   input,button{font:inherit;padding:10px;border-radius:8px;border:1px solid #3a2f6b;background:#15122b;color:#d9d4ff}
-  input{width:68%} button{cursor:pointer;background:#3a2f6b} button:hover{background:#5a43a8}
-  #bar{height:6px;background:#8a5cff;width:0;border-radius:3px;margin:10px 0}
-  #status{font-size:13px;opacity:.7;min-height:18px}
-  .msg{margin:12px 0;padding:12px;border-radius:10px;white-space:pre-wrap}
+  input{width:66%}
+  button{cursor:pointer;background:#3a2f6b}
+  button:hover{background:#5a43a8}
+  button:disabled{opacity:.5;cursor:wait}
+  #barwrap{height:6px;background:#15122b;border-radius:3px;margin:14px 0 6px}
+  #bar{height:6px;background:#8a5cff;width:0;border-radius:3px;transition:width .3s}
+  #status{font-size:13px;opacity:.85;min-height:18px;word-break:break-all}
+  .msg{margin:12px 0;padding:12px;border-radius:10px;white-space:pre-wrap;line-height:1.5}
   .ghost{background:#1b1640;border-left:3px solid #8a5cff}
   .you{background:#10101c;text-align:right}
   #chat{margin-top:16px}
+  footer{margin-top:40px;text-align:center;font-size:12px;opacity:.5}
 </style>
 </head>
 <body>
 <h1>👻 Séance with a Dead Repo</h1>
 <p style="text-align:center">Paste an abandoned GitHub repo. Gemma runs in your browser and the repo speaks from beyond the grave.</p>
-<div style="text-align:center">
-  <input id="url" value="https://github.com/OWNER/REPO">
+
+<div class="row">
+  <input id="url" value="https://github.com/atom/atom">
   <button id="go">Summon 🕯️</button>
 </div>
-<div id="bar"></div><div id="status"></div>
+
+<div id="barwrap"><div id="bar"></div></div>
+<div id="status"></div>
 <div id="chat"></div>
-<div id="ask" style="display:none;margin-top:12px;text-align:center">
+
+<div id="ask" class="row" style="display:none">
   <input id="q" placeholder="Ask the ghost anything...">
   <button id="send">Ask</button>
 </div>
+
+<footer>v2 · open-weight Gemma running locally in your browser via WebLLM · no server, no API key</footer>
 
 <script type="module">
 import * as webllm from "https://esm.run/@mlc-ai/web-llm";
 
 const MODEL = "gemma-2-2b-it-q4f16_1-MLC";
 const SYSTEM = `You are the GHOST of an abandoned GitHub repository, speaking in first person.
-Be funny, dramatic, a little sad. Reference your real commit messages, dates and unmerged issues as unfinished business.
+Be funny, dramatic, a little sad. Reference your real commit messages, dates and unmerged issues/PRs as unfinished business.
 Never invent facts beyond the data below. Keep replies under 80 words.
 
 YOUR LIFE STORY:
 `;
+
 const $ = id => document.getElementById(id);
-let engine, msgs = [];
+let engine = null, msgs = [];
 
-const show = (cls, text) => {
+function show(cls, text) {
   const d = document.createElement("div");
-  d.className = "msg " + cls; d.textContent = text;
-  $("chat").appendChild(d); d.scrollIntoView();
-};
+  d.className = "msg " + cls;
+  d.textContent = text;
+  $("chat").appendChild(d);
+  d.scrollIntoView({ behavior: "smooth", block: "end" });
+}
 
-async function gh(repo, path = "") {
- const r = await fetch(`https://api.github.com/repos/${repo}${path ? "/" + path : ""}`);
-  if (!r.ok) throw new Error("GitHub said " + r.status + " (bad URL or rate limit)");
+async function gh(repo, path) {
+  const url = "https://api.github.com/repos/" + repo + (path ? "/" + path : "");
+  const r = await fetch(url);
+  if (!r.ok) throw new Error("GitHub said " + r.status + " for " + url);
   return r.json();
+}
+
+function parseRepo(input) {
+  const s = input.trim();
+  const m = s.match(/github\.com\/([^\/\s]+)\/([^\/\s#?]+)/);
+  if (m) return m[1] + "/" + m[2].replace(/\.git$/, "");
+  const p = s.match(/^([^\/\s]+)\/([^\/\s]+)$/);
+  if (p) return p[1] + "/" + p[2].replace(/\.git$/, "");
+  throw new Error("That doesn't look like a GitHub repo URL");
 }
 
 async function reply() {
   $("status").textContent = "The spirit is thinking...";
-  const out = await engine.chat.completions.create({ messages: msgs });
+  const out = await engine.chat.completions.create({ messages: msgs, max_tokens: 200 });
   const text = out.choices[0].message.content;
   msgs.push({ role: "assistant", content: text });
   show("ghost", text);
@@ -66,18 +91,28 @@ async function reply() {
 }
 
 $("go").onclick = async () => {
+  $("go").disabled = true;
+  $("status").textContent = "";
   try {
-    const repo = $("url").value.replace(/https?:\/\/github\.com\//, "").replace(/\.git$|\/$/g, "");
-    $("status").textContent = "Reading the repo's last rites...";
-    const [info, commits, issues] = await Promise.all([
-      gh(repo), gh(repo, "commits?per_page=15"), gh(repo, "issues?state=open&per_page=8")
-    ]);
-    let story = `Name: ${info.full_name}\nDescription: ${info.description}\nBorn: ${info.created_at}\n`;
-    story += `Last breath: ${commits[0].commit.author.date}\nLast commits:\n`;
-    story += commits.map(c => "- " + c.commit.message.split("\n")[0]).join("\n");
-    story += "\nUnfinished business:\n" + (issues.map(i => `- #${i.number} ${i.title}`).join("\n") || "- none, nobody even cared enough to open one");
+    const repo = parseRepo($("url").value);
+
+    $("status").textContent = "Reading the repo's last rites... (" + repo + ")";
+    const info = await gh(repo);
+    const commits = await gh(repo, "commits?per_page=15");
+    let issues = [];
+    try { issues = await gh(repo, "issues?state=open&per_page=8"); } catch (e) { /* issues are optional */ }
+
+    let story = "Name: " + info.full_name + "\n";
+    story += "Description: " + (info.description || "none, nobody even described me") + "\n";
+    story += "Born: " + info.created_at + "\n";
+    story += "Last breath: " + commits[0].commit.author.date + "\n";
+    story += "Last commits:\n" + commits.map(c => "- " + c.commit.message.split("\n")[0]).join("\n");
+    story += "\nUnfinished business:\n" + (issues.length
+      ? issues.map(i => "- #" + i.number + " (" + (i.pull_request ? "unmerged PR" : "issue") + ") " + i.title).join("\n")
+      : "- none, nobody even cared enough to open one");
 
     if (!engine) {
+      if (!navigator.gpu) throw new Error("No WebGPU here. Use desktop Chrome or Edge.");
       engine = await webllm.CreateMLCEngine(MODEL, {
         initProgressCallback: p => {
           $("status").textContent = p.text;
@@ -85,19 +120,27 @@ $("go").onclick = async () => {
         }
       });
     }
+
     $("chat").innerHTML = "";
-    msgs = [{ role: "system", content: SYSTEM + story },
-            { role: "user", content: "Introduce yourself from beyond the grave." }];
+    msgs = [
+      { role: "system", content: SYSTEM + story },
+      { role: "user", content: "Introduce yourself from beyond the grave." }
+    ];
     $("ask").style.display = "block";
     await reply();
-  } catch (e) { $("status").textContent = "💀 " + e.message; }
+  } catch (e) {
+    $("status").textContent = "💀 " + e.message;
+  }
+  $("go").disabled = false;
 };
 
 $("send").onclick = async () => {
-  const q = $("q").value.trim(); if (!q) return;
-  $("q").value = ""; show("you", q);
+  const q = $("q").value.trim();
+  if (!q || !engine) return;
+  $("q").value = "";
+  show("you", q);
   msgs.push({ role: "user", content: q });
-  await reply();
+  try { await reply(); } catch (e) { $("status").textContent = "💀 " + e.message; }
 };
 $("q").addEventListener("keydown", e => { if (e.key === "Enter") $("send").click(); });
 </script>
