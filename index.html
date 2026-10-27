@@ -37,21 +37,19 @@
   <input id="q" placeholder="Ask the ghost anything...">
   <button id="send">Ask</button>
 </div>
-<footer id="foot">v5 · CPU/WASM · no GPU, no server, no API key</footer>
+<footer id="foot">v6 · CPU/WASM · no GPU, no server, no API key</footer>
 
 <script type="module">
-import { pipeline, env } from "https://cdn.jsdelivr.net/npm/@huggingface/transformers@latest";
+import { pipeline, env } from "https://cdn.jsdelivr.net/npm/@huggingface/transformers@3";
 
-// single-threaded WASM works on GitHub Pages (no cross-origin isolation needed)
 try { env.backends.onnx.wasm.numThreads = 1; } catch (e) {}
 
-// [model, dtype] tried in order; Gemma first
+// Older Xenova ONNX exports (no GatherBlockQuantized op). Smallest/fastest first.
 const CANDIDATES = [
-  ["onnx-community/gemma-3-270m-it-ONNX", "q8"],
-  ["onnx-community/gemma-3-270m-it-ONNX", "q4"],
-  ["onnx-community/gemma-3-270m-it-ONNX", "fp32"],
-  ["onnx-community/SmolLM2-360M-Instruct", "q8"],
-  ["onnx-community/Qwen2.5-0.5B-Instruct", "q8"]
+  ["Xenova/Qwen1.5-0.5B-Chat", "q8"],
+  ["Xenova/TinyLlama-1.1B-Chat-v1.0", "q8"],
+  ["HuggingFaceTB/SmolLM2-135M-Instruct", "q8"],
+  ["onnx-community/Qwen2.5-0.5B-Instruct", "fp16"]
 ];
 
 const SYSTEM = `You are the GHOST of an abandoned GitHub repository, speaking in first person.
@@ -73,7 +71,7 @@ function show(cls, text) {
 }
 
 function errText(e) {
-  if (typeof e === "number") return "WASM runtime error code " + e + " (model/dtype not runnable here)";
+  if (typeof e === "number") return "WASM runtime error code " + e;
   return e && e.message ? e.message : String(e);
 }
 
@@ -103,9 +101,8 @@ async function loadModel() {
           if (p.status === "progress" && p.progress != null) $("bar").style.width = p.progress + "%";
         }
       });
-      // smoke test so a broken build fails here
       await g([{ role: "user", content: "hi" }], { max_new_tokens: 4 });
-      $("foot").textContent = "v5 · model: " + id + " (" + dtype + ") · CPU/WASM · no GPU, no server, no API key";
+      $("foot").textContent = "v6 · model: " + id + " (" + dtype + ") · CPU/WASM · no GPU, no server, no API key";
       return g;
     } catch (e) {
       console.error(id, dtype, e);
@@ -117,7 +114,7 @@ async function loadModel() {
 
 async function reply() {
   $("status").textContent = "The spirit is thinking...";
-  const out = await gen(msgs, { max_new_tokens: 120, do_sample: true, temperature: 0.8 });
+  const out = await gen(msgs, { max_new_tokens: 110, do_sample: true, temperature: 0.8 });
   const text = out[0].generated_text.at(-1).content.trim();
   msgs.push({ role: "assistant", content: text });
   show("ghost", text);
