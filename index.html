@@ -15,7 +15,7 @@
   button:disabled{opacity:.5;cursor:wait}
   #barwrap{height:6px;background:#15122b;border-radius:3px;margin:14px 0 6px}
   #bar{height:6px;background:#8a5cff;width:0;border-radius:3px;transition:width .3s}
-  #status{font-size:13px;opacity:.9;min-height:18px;word-break:break-word}
+  #status{font-size:13px;opacity:.9;min-height:18px;word-break:break-word;white-space:pre-wrap}
   .msg{margin:12px 0;padding:12px;border-radius:10px;white-space:pre-wrap;line-height:1.5}
   .ghost{background:#1b1640;border-left:3px solid #8a5cff}
   .you{background:#10101c;text-align:right}
@@ -24,7 +24,7 @@
 </head>
 <body>
 <h1>👻 Séance with a Dead Repo</h1>
-<p style="text-align:center">Paste an abandoned GitHub repo. An open-weight Gemma runs in your browser and the repo speaks from beyond the grave.</p>
+<p style="text-align:center">Paste an abandoned GitHub repo. An open-weight model runs in your browser and the repo speaks from beyond the grave.</p>
 
 <div class="row">
   <input id="url" value="https://github.com/atom/atom">
@@ -37,15 +37,23 @@
   <input id="q" placeholder="Ask the ghost anything...">
   <button id="send">Ask</button>
 </div>
-<footer id="foot">v4 · CPU/WASM · no GPU, no server, no API key</footer>
+<footer id="foot">v5 · CPU/WASM · no GPU, no server, no API key</footer>
 
 <script type="module">
-import { pipeline } from "https://cdn.jsdelivr.net/npm/@huggingface/transformers@3";
+import { pipeline, env } from "https://cdn.jsdelivr.net/npm/@huggingface/transformers@latest";
 
-const MODELS = [
-  "onnx-community/gemma-3-270m-it-ONNX",
-  "HuggingFaceTB/SmolLM2-360M-Instruct"
+// single-threaded WASM works on GitHub Pages (no cross-origin isolation needed)
+try { env.backends.onnx.wasm.numThreads = 1; } catch (e) {}
+
+// [model, dtype] tried in order; Gemma first
+const CANDIDATES = [
+  ["onnx-community/gemma-3-270m-it-ONNX", "q8"],
+  ["onnx-community/gemma-3-270m-it-ONNX", "q4"],
+  ["onnx-community/gemma-3-270m-it-ONNX", "fp32"],
+  ["onnx-community/SmolLM2-360M-Instruct", "q8"],
+  ["onnx-community/Qwen2.5-0.5B-Instruct", "q8"]
 ];
+
 const SYSTEM = `You are the GHOST of an abandoned GitHub repository, speaking in first person.
 Be funny, dramatic and a little sad. Mention your real commit messages and unfinished issues as unfinished business.
 Only use facts from the data below. Reply in under 60 words.
@@ -64,6 +72,11 @@ function show(cls, text) {
   d.scrollIntoView({ behavior: "smooth", block: "end" });
 }
 
+function errText(e) {
+  if (typeof e === "number") return "WASM runtime error code " + e + " (model/dtype not runnable here)";
+  return e && e.message ? e.message : String(e);
+}
+
 async function gh(repo, path) {
   const url = "https://api.github.com/repos/" + repo + (path ? "/" + path : "");
   const r = await fetch(url);
@@ -79,28 +92,27 @@ function parseRepo(s) {
 }
 
 async function loadModel() {
-  let lastErr;
-  for (const id of MODELS) {
+  const failures = [];
+  for (const [id, dtype] of CANDIDATES) {
     try {
-      $("status").textContent = "Loading " + id + "...";
+      $("status").textContent = (failures.length ? failures.join("\n") + "\n" : "") + "Trying " + id + " (" + dtype + ")...";
+      $("bar").style.width = "0%";
       const g = await pipeline("text-generation", id, {
-        dtype: "q4",
-        device: "wasm",
+        dtype, device: "wasm",
         progress_callback: p => {
-          if (p.status === "progress" && p.progress != null) {
-            $("bar").style.width = p.progress + "%";
-            $("status").textContent = "Downloading " + id + " " + Math.round(p.progress) + "%";
-          }
+          if (p.status === "progress" && p.progress != null) $("bar").style.width = p.progress + "%";
         }
       });
-      $("foot").textContent = "v4 · model: " + id + " · CPU/WASM · no GPU, no server, no API key";
+      // smoke test so a broken build fails here
+      await g([{ role: "user", content: "hi" }], { max_new_tokens: 4 });
+      $("foot").textContent = "v5 · model: " + id + " (" + dtype + ") · CPU/WASM · no GPU, no server, no API key";
       return g;
     } catch (e) {
-      console.error(id, e);
-      lastErr = new Error(id + " failed: " + (e && e.message ? e.message : e));
+      console.error(id, dtype, e);
+      failures.push("✗ " + id + " (" + dtype + "): " + errText(e));
     }
   }
-  throw lastErr;
+  throw new Error(failures.join("\n"));
 }
 
 async function reply() {
@@ -138,7 +150,7 @@ $("go").onclick = async () => {
     await reply();
   } catch (e) {
     console.error(e);
-    $("status").textContent = "💀 " + (e && e.message ? e.message : e);
+    $("status").textContent = "💀 " + errText(e);
   }
   $("go").disabled = false;
 };
@@ -149,7 +161,7 @@ $("send").onclick = async () => {
   $("q").value = "";
   show("you", q);
   msgs.push({ role: "user", content: q });
-  try { await reply(); } catch (e) { $("status").textContent = "💀 " + e.message; }
+  try { await reply(); } catch (e) { $("status").textContent = "💀 " + errText(e); }
 };
 $("q").addEventListener("keydown", e => { if (e.key === "Enter") $("send").click(); });
 </script>
