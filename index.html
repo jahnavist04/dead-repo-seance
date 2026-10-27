@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Séance with a Dead Repo</title>
-<meta name="description" content="Summon the ghost of an abandoned GitHub repo. Powered by open-weight Gemma running on your own machine.">
+<meta name="description" content="Summon the ghost of an abandoned GitHub repo, played by an open-weight model.">
 <style>
 :root{--bg:#0a0a12;--card:#141228;--line:#2c2552;--ink:#e4e0ff;--dim:#9a93c9;--glow:#8a5cff;--ok:#5be3a1;--bad:#ff6b8b}
 *{box-sizing:border-box}
@@ -29,8 +29,6 @@ button:hover{filter:brightness(1.15)} button:disabled{opacity:.5;cursor:wait}
 .dot.ok{background:var(--ok);box-shadow:0 0 8px var(--ok)} .dot.bad{background:var(--bad)}
 details{margin-top:12px;color:var(--dim);font-size:14px;line-height:1.6}
 summary{cursor:pointer;color:var(--ink)}
-code,pre{background:#0b0a17;border:1px solid var(--line);border-radius:8px;padding:2px 6px;font-size:13px}
-pre{padding:10px;overflow:auto;margin:8px 0}
 #chat{margin-top:22px}
 .msg{margin:12px 0;padding:14px 16px;border-radius:12px;line-height:1.6;white-space:pre-wrap}
 .msg.ghost{background:linear-gradient(180deg,#1d1745,#161237);border-left:3px solid var(--glow);box-shadow:0 0 24px #8a5cff22}
@@ -47,7 +45,7 @@ footer{text-align:center;color:var(--dim);font-size:12px;margin-top:40px;line-he
   <header>
     <div class="ghost-emoji">👻</div>
     <h1>Séance with a Dead Repo</h1>
-    <p class="sub">Paste an abandoned GitHub repo. It reads the repo's real commits and unfinished issues, and an open-weight model plays the ghost, running on <b>your</b> machine.</p>
+    <p class="sub">Paste an abandoned GitHub repo. It reads the repo's real commits and unfinished issues, and an open-weight model plays the ghost.</p>
   </header>
 
   <div class="card">
@@ -59,17 +57,19 @@ footer{text-align:center;color:var(--dim);font-size:12px;margin-top:40px;line-he
       <span class="chip" data-r="atom/atom">atom/atom</span>
       <span class="chip" data-r="bower/bower">bower/bower</span>
     </div>
-    <div class="row" style="margin-top:14px;align-items:center;justify-content:space-between">
-      <span class="pill"><span id="dot" class="dot"></span><span id="conn">Checking for Ollama…</span></span>
-      <select id="model" aria-label="Model" style="min-width:180px"><option>—</option></select>
+    <div class="row" style="margin-top:14px">
+      <select id="prov" aria-label="Provider"><option value="groq">Groq (free, hosted open models)</option><option value="ollama">Ollama (local)</option></select>
+      <input id="key" type="password" placeholder="Groq API key (gsk_...)" aria-label="API key" autocomplete="off">
     </div>
-    <details id="help">
-      <summary>One-time setup (30 seconds)</summary>
-      <p>This site talks to <b>Ollama running on your own computer</b>, so there's no server, no API key and no data leaves your machine except the public GitHub API.</p>
-      <p>1. Install <a style="color:#b89cff" href="https://ollama.com" target="_blank" rel="noopener">Ollama</a> and run <code>ollama pull gemma3:4b</code></p>
-      <p>2. Allow this site to talk to it. In PowerShell:</p>
-      <pre>setx OLLAMA_ORIGINS "https://jahnavist04.github.io"</pre>
-      <p>3. Quit Ollama from the tray, reopen it, then refresh this page. If Chrome asks to allow local network access, click Allow.</p>
+    <div class="row" style="margin-top:10px;align-items:center;justify-content:space-between">
+      <span class="pill"><span id="dot" class="dot"></span><span id="conn">Add a key to connect</span></span>
+      <select id="model" aria-label="Model" style="min-width:200px"><option>—</option></select>
+    </div>
+    <details id="help" open>
+      <summary>Get a free key (1 minute, no card)</summary>
+      <p>1. Go to <a style="color:#b89cff" href="https://console.groq.com/keys" target="_blank" rel="noopener">console.groq.com/keys</a> and sign in.</p>
+      <p>2. Create an API key and paste it above. It is saved only in <b>your browser</b> and sent only to Groq, never to a server of mine.</p>
+      <p>The models are open-weight (Llama, Gemma, ...). Have a machine with disk space? Pick <b>Ollama (local)</b> instead and nothing leaves your computer.</p>
     </details>
     <div id="err"></div>
   </div>
@@ -80,11 +80,17 @@ footer{text-align:center;color:var(--dim);font-size:12px;margin-top:40px;line-he
     <button id="send">Ask</button>
   </div>
 
-  <footer>Built for the DEV Hacktoberfest Open-Source AI Challenge · open-weight Gemma via Ollama · no server, no API key</footer>
+  <footer>Built for the DEV Hacktoberfest Open-Source AI Challenge · open-weight models (Llama / Gemma) via Groq or local Ollama · static site, your key stays in your browser</footer>
 </div>
 
 <script>
-const OLLAMA = "http://localhost:11434";
+const PROVIDERS = {
+  groq:   { base: "https://api.groq.com/openai/v1", needKey: true },
+  ollama: { base: "http://localhost:11434/v1", needKey: false }
+};
+const store = { get(k){ try { return localStorage.getItem(k) || ""; } catch(e){ return ""; } }, set(k,v){ try { localStorage.setItem(k,v); } catch(e){} } };
+function cfg(){ const p = PROVIDERS[$("prov").value]; return { base: p.base, key: $("key").value.trim(), needKey: p.needKey }; }
+function headers(){ const c = cfg(); const h = { "Content-Type": "application/json" }; if (c.key) h.Authorization = "Bearer " + c.key; return h; }
 const $ = id => document.getElementById(id);
 let story = "", msgs = [], busy = false;
 
@@ -100,21 +106,23 @@ function bubble(cls, text) {
 }
 
 async function checkOllama() {
+  const c = cfg();
+  if (c.needKey && !c.key) { $("dot").className = "dot"; $("conn").textContent = "Add a key to connect"; return false; }
   try {
-    const r = await fetch(OLLAMA + "/api/tags");
+    const r = await fetch(c.base + "/models", { headers: headers() });
     if (!r.ok) throw new Error("status " + r.status);
-    const { models } = await r.json();
-    if (!models.length) throw new Error("no models");
-    const names = models.map(m => m.name);
-    const pick = names.find(n => /gemma/i.test(n)) || names[0];
+    const { data } = await r.json();
+    const names = data.map(m => m.id).filter(n => !/whisper|guard|tts|embed|moderation|playai/i.test(n));
+    if (!names.length) throw new Error("no models");
+    const pick = names.find(n => /gemma/i.test(n)) || names.find(n => /llama/i.test(n)) || names[0];
     $("model").innerHTML = names.map(n => `<option ${n === pick ? "selected" : ""}>${n}</option>`).join("");
     $("dot").className = "dot ok";
-    $("conn").textContent = "Ollama connected · " + names.length + " model" + (names.length > 1 ? "s" : "");
+    $("conn").textContent = "Connected · " + names.length + " models";
     $("help").open = false;
     return true;
   } catch (e) {
     $("dot").className = "dot bad";
-    $("conn").textContent = "Ollama not reachable";
+    $("conn").textContent = c.needKey ? "Couldn't connect (check the key)" : "Ollama not reachable";
     $("help").open = true;
     return false;
   }
@@ -128,12 +136,12 @@ async function gh(repo, path) {
 }
 
 async function streamReply(messages, el) {
-  const r = await fetch(OLLAMA + "/api/chat", {
+  const r = await fetch(cfg().base + "/chat/completions", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ model: $("model").value, messages, stream: true })
+    headers: headers(),
+    body: JSON.stringify({ model: $("model").value, messages, stream: true, max_tokens: 200, temperature: 0.8 })
   });
-  if (!r.ok) throw new Error("Ollama said " + r.status + ": " + (await r.text()).slice(0, 200));
+  if (!r.ok) throw new Error("Model API said " + r.status + ": " + (await r.text()).slice(0, 200));
   const reader = r.body.getReader(), dec = new TextDecoder();
   let buf = "", full = "";
   el.classList.add("cursor");
@@ -143,9 +151,15 @@ async function streamReply(messages, el) {
     buf += dec.decode(value, { stream: true });
     const lines = buf.split("\n"); buf = lines.pop();
     for (const line of lines) {
-      if (!line.trim()) continue;
-      const j = JSON.parse(line);
-      if (j.message && j.message.content) { full += j.message.content; el.textContent = full; }
+      const t = line.trim();
+      if (!t.startsWith("data:")) continue;
+      const d = t.slice(5).trim();
+      if (d === "[DONE]") continue;
+      try {
+        const j = JSON.parse(d);
+        const piece = j.choices && j.choices[0] && j.choices[0].delta && j.choices[0].delta.content;
+        if (piece) { full += piece; el.textContent = full; }
+      } catch (e) {}
     }
   }
   el.classList.remove("cursor");
@@ -165,7 +179,7 @@ $("go").onclick = async () => {
   $("err").textContent = "";
   setBusy(true);
   try {
-    if (!(await checkOllama())) throw new Error("Can't reach Ollama. Open the setup steps above, then refresh.");
+    if (!(await checkOllama())) throw new Error("Not connected. Paste your Groq key above (or switch to Ollama).");
     const m = $("url").value.match(/github\.com\/([^\/\s]+)\/([^\/\s#?]+)/) || $("url").value.trim().match(/^([^\/\s]+)\/([^\/\s]+)$/);
     if (!m) throw new Error("Paste a GitHub repo URL like https://github.com/owner/name");
     const repo = m[1] + "/" + m[2].replace(/\.git$/, "");
@@ -199,7 +213,10 @@ $("send").onclick = async () => {
 };
 $("q").addEventListener("keydown", e => { if (e.key === "Enter") $("send").click(); });
 document.querySelectorAll(".chip").forEach(c => c.onclick = () => { $("url").value = "https://github.com/" + c.dataset.r; });
-checkOllama();
+$("key").value = store.get("seance_key"); $("prov").value = store.get("seance_prov") || "groq";
+function onCfg(){ store.set("seance_key", $("key").value.trim()); store.set("seance_prov", $("prov").value); $("key").style.display = PROVIDERS[$("prov").value].needKey ? "" : "none"; checkOllama(); }
+$("key").addEventListener("change", onCfg); $("prov").addEventListener("change", onCfg);
+onCfg();
 </script>
 </body>
 </html>
