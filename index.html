@@ -51,7 +51,7 @@ const show = (cls, text) => {
 };
 
 async function gh(repo, path = "") {
-  const r = await fetch(`https://api.github.com/repos/${repo}/${path}`);
+ const r = await fetch(`https://api.github.com/repos/${repo}${path ? "/" + path : ""}`);
   if (!r.ok) throw new Error("GitHub said " + r.status + " (bad URL or rate limit)");
   return r.json();
 }
