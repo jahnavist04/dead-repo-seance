@@ -141,8 +141,7 @@ $("go").onclick = async () => {
     if (!gen) gen = await loadModel();
 
     $("chat").innerHTML = "";
-    msgs = [{ role: "system", content: SYSTEM + story },
-            { role: "user", content: "Introduce yourself from beyond the grave." }];
+    msgs = [{ role: "user", content: SYSTEM + story + "\n\nNow speak as this repo's ghost, in first person, in 3 short sentences. Mention one real commit message." }];
     $("ask").style.display = "block";
     await reply();
   } catch (e) {
