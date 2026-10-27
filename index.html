@@ -15,12 +15,12 @@
   button:disabled{opacity:.5;cursor:wait}
   #barwrap{height:6px;background:#15122b;border-radius:3px;margin:14px 0 6px}
   #bar{height:6px;background:#8a5cff;width:0;border-radius:3px;transition:width .3s}
-  #status{font-size:13px;opacity:.85;min-height:18px;word-break:break-all}
+  #status{font-size:13px;opacity:.9;min-height:18px;word-break:break-word}
   .msg{margin:12px 0;padding:12px;border-radius:10px;white-space:pre-wrap;line-height:1.5}
   .ghost{background:#1b1640;border-left:3px solid #8a5cff}
   .you{background:#10101c;text-align:right}
   #chat{margin-top:16px}
-  footer{margin-top:40px;text-align:center;font-size:12px;opacity:.5}
+  footer{margin-top:40px;text-align:center;font-size:12px;opacity:.55}
 </style>
 </head>
 <body>
@@ -41,12 +41,11 @@
   <button id="send">Ask</button>
 </div>
 
-<footer>v2 · open-weight Gemma running locally in your browser via WebLLM · no server, no API key</footer>
+<footer id="foot">v3 · open-weight Gemma running locally in your browser via WebLLM · no server, no API key</footer>
 
 <script type="module">
 import * as webllm from "https://esm.run/@mlc-ai/web-llm";
 
-const MODEL = "gemma-2-2b-it-q4f32_1-MLC";
 const SYSTEM = `You are the GHOST of an abandoned GitHub repository, speaking in first person.
 Be funny, dramatic, a little sad. Reference your real commit messages, dates and unmerged issues/PRs as unfinished business.
 Never invent facts beyond the data below. Keep replies under 80 words.
@@ -55,7 +54,7 @@ YOUR LIFE STORY:
 `;
 
 const $ = id => document.getElementById(id);
-let engine = null, msgs = [];
+let engine = null, usedModel = "", msgs = [];
 
 function show(cls, text) {
   const d = document.createElement("div");
@@ -81,9 +80,56 @@ function parseRepo(input) {
   throw new Error("That doesn't look like a GitHub repo URL");
 }
 
+// Pick Gemma builds this browser/GPU can actually run, smallest-memory first.
+async function candidateModels() {
+  if (!navigator.gpu) throw new Error("No WebGPU here. Use desktop Chrome or Edge.");
+  const adapter = await navigator.gpu.requestAdapter();
+  if (!adapter) throw new Error("WebGPU is on but no GPU adapter was found.");
+  const hasF16 = adapter.features.has("shader-f16");
+
+  const wanted = hasF16
+    ? ["gemma-2-2b-it-q4f16_1-MLC-1k", "gemma-2-2b-it-q4f32_1-MLC-1k", "gemma-2-2b-it-q4f16_1-MLC", "gemma-2-2b-it-q4f32_1-MLC"]
+    : ["gemma-2-2b-it-q4f32_1-MLC-1k", "gemma-2-2b-it-q4f32_1-MLC"];
+
+  const available = new Set(webllm.prebuiltAppConfig.model_list.map(m => m.model_id));
+  const list = wanted.filter(id => available.has(id));
+  if (!list.length) {
+    const gemmas = [...available].filter(id => /gemma/i.test(id)).join(", ");
+    throw new Error("No expected Gemma build in this WebLLM version. Available Gemma: " + gemmas);
+  }
+  console.log("shader-f16:", hasF16, "candidates:", list);
+  return list;
+}
+
+async function loadEngine() {
+  const candidates = await candidateModels();
+  let lastErr = null;
+  for (const id of candidates) {
+    try {
+      $("status").textContent = "Loading " + id + "...";
+      const e = await webllm.CreateMLCEngine(id, {
+        initProgressCallback: p => {
+          $("status").textContent = p.text;
+          $("bar").style.width = (p.progress * 100) + "%";
+        }
+      });
+      // quick smoke test so a broken build fails HERE, not mid-demo
+      await e.chat.completions.create({ messages: [{ role: "user", content: "hi" }], max_tokens: 4 });
+      usedModel = id;
+      $("foot").textContent = "v3 · model: " + id + " · open-weight Gemma running locally in your browser via WebLLM · no server, no API key";
+      return e;
+    } catch (err) {
+      console.error("Model failed:", id, err);
+      lastErr = new Error(id + " failed: " + (err && err.message ? err.message : err));
+      try { await webllm.MLCEngine && null; } catch (_) {}
+    }
+  }
+  throw lastErr || new Error("No model could be loaded");
+}
+
 async function reply() {
   $("status").textContent = "The spirit is thinking...";
-  const out = await engine.chat.completions.create({ messages: msgs, max_tokens: 200 });
+  const out = await engine.chat.completions.create({ messages: msgs, max_tokens: 160 });
   const text = out.choices[0].message.content;
   msgs.push({ role: "assistant", content: text });
   show("ghost", text);
@@ -100,7 +146,7 @@ $("go").onclick = async () => {
     const info = await gh(repo);
     const commits = await gh(repo, "commits?per_page=15");
     let issues = [];
-    try { issues = await gh(repo, "issues?state=open&per_page=8"); } catch (e) { /* issues are optional */ }
+    try { issues = await gh(repo, "issues?state=open&per_page=8"); } catch (e) {}
 
     let story = "Name: " + info.full_name + "\n";
     story += "Description: " + (info.description || "none, nobody even described me") + "\n";
@@ -111,15 +157,7 @@ $("go").onclick = async () => {
       ? issues.map(i => "- #" + i.number + " (" + (i.pull_request ? "unmerged PR" : "issue") + ") " + i.title).join("\n")
       : "- none, nobody even cared enough to open one");
 
-    if (!engine) {
-      if (!navigator.gpu) throw new Error("No WebGPU here. Use desktop Chrome or Edge.");
-      engine = await webllm.CreateMLCEngine(MODEL, {
-        initProgressCallback: p => {
-          $("status").textContent = p.text;
-          $("bar").style.width = (p.progress * 100) + "%";
-        }
-      });
-    }
+    if (!engine) engine = await loadEngine();
 
     $("chat").innerHTML = "";
     msgs = [
@@ -129,7 +167,9 @@ $("go").onclick = async () => {
     $("ask").style.display = "block";
     await reply();
   } catch (e) {
-    $("status").textContent = "💀 " + e.message;
+    console.error(e);
+    engine = null; // force a clean reload on the next Summon
+    $("status").textContent = "💀 " + (e && e.message ? e.message : e);
   }
   $("go").disabled = false;
 };
@@ -140,7 +180,8 @@ $("send").onclick = async () => {
   $("q").value = "";
   show("you", q);
   msgs.push({ role: "user", content: q });
-  try { await reply(); } catch (e) { $("status").textContent = "💀 " + e.message; }
+  try { await reply(); }
+  catch (e) { console.error(e); engine = null; $("status").textContent = "💀 " + (e && e.message ? e.message : e) + " (hit Summon to reload the ghost)"; }
 };
 $("q").addEventListener("keydown", e => { if (e.key === "Enter") $("send").click(); });
 </script>
